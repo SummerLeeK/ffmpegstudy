@@ -14,10 +14,18 @@
 #include <libavfilter/buffersrc.h>
 #include <libavfilter/buffersink.h>
 #include <libswscale/swscale.h>
+//http://www.ffmpeg.org/ffmpeg-filters.html 滤镜库参考
+//偏色
+const char *filter_descr="hue='h=60:s=-3";
 //黑白滤镜 部分视频呈现的效果并非黑白的
-//const char *filter_descr = "lutyuv='u=128:v=128'";
+const char *black_filter_descr = "lutyuv='u=128:v=128'";
 //添加图片水印overlay=50:50 水印的xy坐标
-const char *filter_descr = "movie=/Users/apple/Desktop/MV/大鱼/周深 - 大鱼_72.bmp[wm];[in][wm]overlay=50:50[out]";
+//overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2
+//main_h – 传入的视频的高度
+//main_w – 传入的视频的宽度
+//overlay_h – 传入的覆盖水印的高度
+//overlay_w – 传入的覆盖水印的宽度
+const char *mask_filter_descr = "movie=/Users/apple/Desktop/MV/大鱼/周深 - 大鱼_72.bmp[wm];[in][wm]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2";
 
 
 
@@ -111,8 +119,9 @@ int initFormat(char *filename){
     
 }
 
-
-int init_filter(){
+static AVFilterInOut *outputs;
+static AVFilterInOut *inputs;
+int init_filter(char *filter_descr){
     
     
     int ret;
@@ -120,8 +129,8 @@ int init_filter(){
     struct AVFilter *buffersink=avfilter_get_by_name("buffersink");
 
     
-    AVFilterInOut *outputs=avfilter_inout_alloc();
-    AVFilterInOut *inputs=avfilter_inout_alloc();
+    outputs=avfilter_inout_alloc();
+    inputs=avfilter_inout_alloc();
     
     enum AVPixelFormat pixfmts[]={AV_PIX_FMT_YUV420P,AV_PIX_FMT_NONE};
     AVBufferSinkParams *buffersink_params;
@@ -165,7 +174,13 @@ int init_filter(){
     inputs->pad_idx=0;
     inputs->next=NULL;
     
-    ret=avfilter_graph_parse_ptr(filter_graph, filter_descr, &inputs, &outputs, NULL);
+    
+    return changefilter(filter_descr);
+}
+
+
+int changefilter(char *filter_descr){
+    int ret=avfilter_graph_parse_ptr(filter_graph, filter_descr, &inputs, &outputs, NULL);
     
     if (ret<0) {
         av_log(NULL, AV_LOG_ERROR, "avfilter_graph_parse_ptr failed %s\n",av_err2str(ret));
@@ -178,10 +193,8 @@ int init_filter(){
         return ret;
     }
     
-    
     return 0;
 }
-
 
 int init_sdl_player(){
     video_width=codecCtx->width;
@@ -227,7 +240,7 @@ int main(int argc,char**argv){
     char *mv="/Users/apple/Desktop/MV/丢火车 - 《浮生之旅》丢火车乐队2018巡演纪录片.mp4";
     char *toradora="/Users/apple/Desktop/龙与虎/Toradora! EP23 [BD 1080p 23.976fps AVC-yuv420p10 FLAC] - VCB-Studio & mawen1250.mkv";
 
-    char* fileName = toradora;
+    char* fileName = mv;
 
     result = initFormat(fileName);
     
@@ -237,7 +250,7 @@ int main(int argc,char**argv){
     }
     
     
-    result=init_filter();
+    result=init_filter(filter_descr);
     
     if (result<0) {
         av_log(NULL, AV_LOG_ERROR, "init filter failed \n");
@@ -272,6 +285,7 @@ int main(int argc,char**argv){
 //    uint8_t *avfilterbuffer=(uint8_t*)av_malloc(sizeof(uint8_t)*numAvfilterBytes);
 //    avpicture_fill(filter_frame->data,buffer , AV_PIX_FMT_YUV420P, screen_width, screen_height);
     
+    int framecount=0;
     while (av_read_frame(inCtx, &pkt)>=0) {
         if (pkt.stream_index==stream_index) {
            result=avcodec_send_packet(codecCtx, &pkt);
@@ -313,6 +327,12 @@ int main(int argc,char**argv){
                         SDL_RenderPresent(renderer);
                         
                         SDL_Delay(40);
+                        framecount++;
+                    
+                    if (framecount>25*10) {
+                    
+                        init_filter(mask_filter_descr);
+                    }
                     
                     av_frame_unref(filter_frame);
                 }
