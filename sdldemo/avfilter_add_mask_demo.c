@@ -54,7 +54,7 @@ static AVFilterGraph * filter_graph;
 
 static char *args;
 
-int initFormat(char *filename){
+static int initFormat(char *filename){
     
     int rst=0;
     rst=avformat_open_input(&inCtx, filename, NULL, NULL);
@@ -93,7 +93,7 @@ int initFormat(char *filename){
             av_log(NULL, AV_LOG_ERROR, "avcodec_alloc_context3 failed \n");
             return -1;
         }
-       rst=avcodec_parameters_copy(codecCtx, inCtx->streams[stream_index]->codecpar);
+       rst=avcodec_parameters_to_context(codecCtx, inCtx->streams[stream_index]->codecpar);
         
         if (rst<0) {
             av_log(NULL, AV_LOG_ERROR, "avcodec_parameters_copy failed %s\n",AVERROR(rst));
@@ -121,7 +121,7 @@ int initFormat(char *filename){
     
 }
 
-void freeInputFormat(){
+static void freeInputFormat(){
     avcodec_close(codecCtx);
     
     avformat_close_input(&inCtx);
@@ -130,7 +130,7 @@ void freeInputFormat(){
 
 static AVFilterInOut *outputs;
 static AVFilterInOut *inputs;
-int init_filter(char *filter_descr){
+static int init_filter(char *filter_descr){
     
     
     int ret;
@@ -190,7 +190,6 @@ int init_filter(char *filter_descr){
     return changefilter(filter_descr);
 }
 
-
 int changefilter(char *filter_descr){
 //    将一串通过字符串描述的Graph添加到FilterGraph中。
     int ret=avfilter_graph_parse_ptr(filter_graph, filter_descr, &inputs, &outputs, NULL);
@@ -209,14 +208,14 @@ int changefilter(char *filter_descr){
     return 0;
 }
 
-void freeFilter(){
+static void freeFilter(){
     avfilter_free(buffersink_ctx);
     avfilter_free(buffersrc_ctx);
     
     avfilter_graph_free(&filter_graph);
 }
 
-int init_sdl_player(){
+static int init_sdl_player(){
     video_width=codecCtx->width;
     video_height=codecCtx->height;
     
@@ -255,11 +254,11 @@ int init_sdl_player(){
 }
 
 
-void freeSDL(){
+static void freeSDL(){
     SDL_Quit();
 }
 
-int main_add_filter(int argc,char**argv){
+static int main_add_filter(int argc,char**argv){
     
     int result=0;
     char *mv="/Users/apple/Desktop/MV/丢火车 - 《浮生之旅》丢火车乐队2018巡演纪录片.mp4";
