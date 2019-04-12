@@ -15,18 +15,20 @@
 #include <libavfilter/buffersink.h>
 #include <libswscale/swscale.h>
 //http://www.ffmpeg.org/ffmpeg-filters.html 滤镜库参考
+//多重滤镜用,号隔开
 //偏色
 const char *filter_descr="hue='h=60:s=-3";
-//黑白滤镜 部分视频呈现的效果并非黑白的
-const char *black_filter_descr = "lutyuv='u=128:v=128'";
+//黑白滤镜 部分视频呈现的效果并非黑白的 加模糊
+const char *black_filter_descr = "lutyuv='u=128:v=128',boxblur";
 //添加图片水印overlay=50:50 水印的xy坐标
 //overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2
 //main_h – 传入的视频的高度
 //main_w – 传入的视频的宽度
 //overlay_h – 传入的覆盖水印的高度
 //overlay_w – 传入的覆盖水印的宽度
-const char *mask_filter_descr = "movie=/Users/apple/Desktop/MV/大鱼/周深 - 大鱼_72.bmp[wm];[in][wm]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2";
-
+const char *mask_filter_descr = "movie=/Users/apple/Desktop/MV/大鱼/周深 - 大鱼_72.bmp[wm];[in][wm]overlay=x=(main_w-overlay_w):y=(main_h-overlay_h)";
+//默认的ffmpeg编译l命令是没有drawtext的滤镜的 需要额外在编译的时候添加 --enable-libfreetype
+const char *drawtext_filter_descr="drawtext=fontfile=arial.ttf:fontcolor=red:fontsize=30:text='HK'";
 
 
 static AVFormatContext *inCtx;
@@ -119,6 +121,13 @@ int initFormat(char *filename){
     
 }
 
+void freeInputFormat(){
+    avcodec_close(codecCtx);
+    
+    avformat_close_input(&inCtx);
+    
+}
+
 static AVFilterInOut *outputs;
 static AVFilterInOut *inputs;
 int init_filter(char *filter_descr){
@@ -153,8 +162,11 @@ int init_filter(char *filter_descr){
     buffersink_params=av_buffersink_params_alloc();
     
     buffersink_params->pixel_fmts=pixfmts;
+//    这个buffersink_params可要可不要？
+//    ret=avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, buffersink_params, filter_graph);
     
-    ret=avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, buffersink_params, filter_graph);
+    
+    ret=avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, NULL, filter_graph);
     
    
     
@@ -163,7 +175,7 @@ int init_filter(char *filter_descr){
         
         return ret;
     }
-     av_free(buffersink_params);
+    av_free(buffersink_params);
     outputs->name=av_strdup("in");
     outputs->filter_ctx=buffersrc_ctx;
     outputs->pad_idx=0;
@@ -180,13 +192,14 @@ int init_filter(char *filter_descr){
 
 
 int changefilter(char *filter_descr){
+//    将一串通过字符串描述的Graph添加到FilterGraph中。
     int ret=avfilter_graph_parse_ptr(filter_graph, filter_descr, &inputs, &outputs, NULL);
     
     if (ret<0) {
         av_log(NULL, AV_LOG_ERROR, "avfilter_graph_parse_ptr failed %s\n",av_err2str(ret));
         return ret;
     }
-    
+//    检查FilterGraph的配置。
     ret=avfilter_graph_config(filter_graph, NULL);
     if (ret<0) {
         av_log(NULL, AV_LOG_ERROR, "avfilter_graph_config failed %s\n",av_err2str(ret));
@@ -194,6 +207,13 @@ int changefilter(char *filter_descr){
     }
     
     return 0;
+}
+
+void freeFilter(){
+    avfilter_free(buffersink_ctx);
+    avfilter_free(buffersrc_ctx);
+    
+    avfilter_graph_free(&filter_graph);
 }
 
 int init_sdl_player(){
@@ -234,7 +254,12 @@ int init_sdl_player(){
     return 0;
 }
 
-int main(int argc,char**argv){
+
+void freeSDL(){
+    SDL_Quit();
+}
+
+int main_add_filter(int argc,char**argv){
     
     int result=0;
     char *mv="/Users/apple/Desktop/MV/丢火车 - 《浮生之旅》丢火车乐队2018巡演纪录片.mp4";
@@ -250,7 +275,7 @@ int main(int argc,char**argv){
     }
     
     
-    result=init_filter(filter_descr);
+    result=init_filter(black_filter_descr);
     
     if (result<0) {
         av_log(NULL, AV_LOG_ERROR, "init filter failed \n");
@@ -298,12 +323,13 @@ int main(int argc,char**argv){
 //                av_log(NULL, AV_LOG_ERROR,"hahaha = %d\n", frame->format);
 //
                 frame->pts=frame->best_effort_timestamp;
-                
+                //添加一个avframe到buffersrc_ctx 做滤镜处理
                 if(av_buffersrc_add_frame(buffersrc_ctx, frame)<0){
                     break;
                 }
                 
                 while (1) {
+//                    从已经处理过的buffersink_ctx(相当于存储已经处理好的avframe)中取出avframe
                     result=av_buffersink_get_frame(buffersink_ctx, filter_frame);
                     if (result<0) {
                         break;
@@ -329,7 +355,7 @@ int main(int argc,char**argv){
                         SDL_Delay(40);
                         framecount++;
                     
-                    if (framecount>25*10) {
+                    if (framecount>25*5) {
                     
                         init_filter(mask_filter_descr);
                     }
@@ -343,6 +369,10 @@ int main(int argc,char**argv){
         
         av_packet_unref(&pkt);
     }
+    
+    freeSDL();
+    freeFilter();
+    freeInputFormat();
 
     return 0;
 }
