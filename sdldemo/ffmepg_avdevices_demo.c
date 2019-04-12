@@ -34,8 +34,8 @@ static int init_sdl_player(){
     video_width=codecCtx->width;
     video_height=codecCtx->height;
     
-    screen_width=video_width/2;
-    screen_height=video_height/2;
+    screen_width=video_width/4;
+    screen_height=video_height/4;
     
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
     
@@ -93,18 +93,21 @@ int main(int argc,char**argv){
     int ret;
     //这句必加 我还以为所有的register_all都被废弃了
     avdevice_register_all();
-//    show_avfoundation_device();
+    show_avfoundation_device();
     AVDictionary* options = NULL;
 //  寻找Macos上的摄像头设备
     inCtx=av_find_input_format("avfoundation");
     av_dict_set(&options, "framerate", "30", 0);
+    //在macOS上 如果是录制屏幕的状态那么video_size设置是无效的
+    //最后生成的图像宽高是屏幕的宽高 
     av_dict_set(&options, "video_size", "1280x720", 0);
     if (!inCtx) {
         av_log(NULL, AV_LOG_ERROR, "av_find_input_format failed \n");
         return -1;
     }
     
-    ret=avformat_open_input(&fmtCtx, "0", inCtx, &options);
+    // 0=获取摄像头 1=录制屏幕
+    ret=avformat_open_input(&fmtCtx, "1", inCtx, &options);
     
     if (ret<0) {
         av_log(NULL, AV_LOG_ERROR, "avformat_open_input failed %s\n",av_err2str(ret));
