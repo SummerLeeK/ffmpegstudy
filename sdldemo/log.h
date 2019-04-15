@@ -10,5 +10,15 @@
 #define log_h
 
 #include <stdio.h>
-
+#include <libavutil/log.h>
 #endif /* log_h */
+
+void base_log(int level,char *info);
+
+void log_e(char *info);
+
+void log_d(char *info);
+
+void log_i(char *info);
+
+void log_w(char *info);
