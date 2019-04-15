@@ -14,10 +14,10 @@
 #include <SDL2/SDL.h>
 
 #define SAVE_FILE 1
-AVFormatContext* fmtCtx;
-AVInputFormat* inCtx;
-AVCodecContext* codecCtx;
-AVCodec* codec;
+static AVFormatContext* fmtCtx;
+static AVInputFormat* inCtx;
+static AVCodecContext* codecCtx;
+static AVCodec* codec;
 
 static int stream_index;
 static int video_width;
@@ -26,79 +26,112 @@ static int video_height;
 static int screen_width;
 static int screen_height;
 
-SDL_Window* window;
-SDL_Renderer* renderer;
-SDL_Texture* texture;
-SDL_Rect videoRect;
-SDL_Thread* thread;
+static SDL_Window* window;
+static SDL_Renderer* renderer;
+static SDL_Texture* texture;
+static SDL_Rect videoRect;
+static SDL_Thread* thread;
 static int delayTime=40;
 static int thread_exit = 0;
 static int bit_rate=400000;
 static AVCodecContext* encodeCodecCtx;
 static AVOutputFormat* outputfmt;
-//static AVFormatContext* outfmt;
+static AVFormatContext *ofmt;
+static AVStream *outStream;
 static AVFrame* outFrame;
 static AVPacket outPkt;
+
 
 static int init_encoder(char* outfilename)
 {
     int ret;
-    outputfmt = av_guess_format(NULL, outfilename, NULL);
-
+    
+    ret=avformat_alloc_output_context2(&ofmt, NULL, NULL, outfilename);
+    
+    if (ret<0) {
+        av_log(NULL, AV_LOG_ERROR, "avformat_alloc_output_context2 failed \n");
+        return -1;
+    }
+    outputfmt=av_guess_format(NULL, outfilename, NULL);
     if (!outputfmt) {
         av_log(NULL, AV_LOG_ERROR, "av_guess_format failed \n");
         return -1;
     }
+    ofmt->oformat=outputfmt;
 
+  
+   
     AVCodec* codec = avcodec_find_encoder(outputfmt->video_codec);
-
+    
+    outStream=avformat_new_stream(ofmt, codec);
+    
+    if (!outStream) {
+        av_log(NULL, AV_LOG_ERROR, "avformat_new_stream failed \n");
+        return -1;
+    }
+    
+    
     encodeCodecCtx = avcodec_alloc_context3(codec);
-    encodeCodecCtx->codec_type=AVMEDIA_TYPE_VIDEO;
-//    encodeCodecCtx->bit_rate = bit_rate;
+    
+    encodeCodecCtx->bit_rate = bit_rate;
     encodeCodecCtx->width = screen_width;
     encodeCodecCtx->height = screen_height;
-    encodeCodecCtx->time_base.num = 1;
-    encodeCodecCtx->time_base.den = 30;
-    encodeCodecCtx->framerate = (AVRational){ 30, 1 };
+
+    encodeCodecCtx->time_base.den=30;
+    encodeCodecCtx->time_base.num=10;
+    encodeCodecCtx->framerate.den=1;
+    encodeCodecCtx->framerate.num=30;
+
     encodeCodecCtx->gop_size = 100;
+    
     encodeCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+    
+    encodeCodecCtx->max_b_frames = 3;
+    encodeCodecCtx->mb_lmin=1;
+    encodeCodecCtx->mb_lmax=50;
+
     //最大和最小量化系数
     encodeCodecCtx->qmin = 10;
     encodeCodecCtx->qmax = 51;
     encodeCodecCtx->qblur=0.0;
-
-    encodeCodecCtx->max_b_frames = 1;
-
-    AVDictionary *params=0;
+    
+    av_dump_format(ofmt, 0, outfilename, 1);
+    
     if (encodeCodecCtx->codec_id == AV_CODEC_ID_H264) {
-        av_dict_set(&params, "preset", "slow", 0);
-        av_dict_set(&params, "tune", "zerolatency", 0);
+        av_opt_set(encodeCodecCtx->priv_data, "preset", "slow", 0);
     }
-
-    if (avcodec_open2(encodeCodecCtx, codec, &params) < 0) {
+    
+    if (avcodec_open2(encodeCodecCtx, codec, NULL) < 0) {
         av_log(NULL, AV_LOG_ERROR, "avcodec_open2 failed \n");
         return -1;
     }
+  
+    ret=avcodec_parameters_from_context(outStream->codecpar, encodeCodecCtx);
 
-    //    outFrame->width = screen_width;
-    //    outFrame->height = screen_height;
-    //    outFrame->format = AV_PIX_FMT_YUV420P;
 
-    //    int numBytes = avpicture_get_size(AV_PIX_FMT_YUV420P, screen_width, screen_width);
-    //    uint8_t* buffer = (uint8_t*)av_malloc(sizeof(uint8_t) * numBytes);
-    //
-    //    avpicture_fill(outFrame->data, buffer, AV_PIX_FMT_YUV420P, screen_width, screen_height);
-    //
-    //    ret = av_frame_get_buffer(outFrame, 32);
-
-    //    if (ret < 0) {
-    //        av_log(NULL, AV_LOG_ERROR, "av_frame_get_buffer failed \n");
-    //        return -1;
-    //    }
-    //    av_frame_make_writable(outFrame);
-
+    if (ret<0) {
+        av_log(NULL, AV_LOG_ERROR, "avcodec_parameters_from_context failed %s\n",av_err2str(ret));
+        return -1;
+    }
+//    outStream->x
+    outStream->time_base=encodeCodecCtx->time_base;
+    ret=avio_open(&ofmt->pb, outfilename, AVIO_FLAG_READ_WRITE);
+    
+    if (ret<0) {
+        av_log(NULL, AV_LOG_ERROR, "avio_open failed \n");
+        return -1;
+    }
+    
+    
+    ret= avformat_write_header(ofmt, NULL);
+    
+    if (ret<0) {
+        av_log(NULL, AV_LOG_ERROR, "avformat_write_header failed %s\n",av_err2str(ret));
+        return -1;
+    }
+    
     av_init_packet(&outPkt);
-
+    
     return 0;
 }
 static int pts = 0;
@@ -109,33 +142,38 @@ static void encodeFrame(FILE* dstFile, AVFrame* frame)
     frame->format=AV_PIX_FMT_YUV420P;
     frame->width=screen_width;
     frame->height=screen_height;
-    
-    int64_t mypts=av_rescale_q(frame->pts, codecCtx->time_base, encodeCodecCtx->time_base);
     //向encodeCodecCtx发送一帧数据
     pts++;
-    frame->pts=pts;
-//    frame->pkt_duration
+     frame->pts = pts;
+    
     ret = avcodec_send_frame(encodeCodecCtx, frame);
-
+    
     if (ret < 0) {
-
-        av_log(NULL, AV_LOG_ERROR, "avcodec_send_frame failed \n");
+        
+        av_log(NULL, AV_LOG_ERROR, "avcodec_send_frame failed %s\n",av_err2str(ret));
         return;
     }
-
+    
     while (ret >= 0) {
         //接受数据。一个packet中可能包含多个frame
         ret = avcodec_receive_packet(encodeCodecCtx, &outPkt);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             //走到这忽略即可 packet可能还没填满
-//            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_packet EAGAIN  AVERROR_EOF  %s\n", av_err2str(ret));
+            //            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_packet EAGAIN  AVERROR_EOF  %s\n", av_err2str(ret));
             return;
         } else if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "avcodec_receive_packet failed %s\n", av_err2str(ret));
             return;
         }
-        fwrite(outPkt.data, 1, outPkt.size, dstFile);
-
+        
+        // 计算packet的pts
+        av_packet_rescale_ts(&outPkt,
+                            codecCtx->time_base,
+                             outStream->time_base);
+       
+        av_interleaved_write_frame(ofmt, &outPkt);
+//        fwrite(outPkt.data, 1, outPkt.size, dstFile);
+        
         av_packet_unref(&outPkt);
     }
 }
@@ -143,7 +181,7 @@ static void encodeFrame(FILE* dstFile, AVFrame* frame)
 #define BREAK_EVENT (SDL_USEREVENT + 2)
 static void refresh_thread(void* data)
 {
-
+    
     while(!thread_exit) {
         SDL_UserEvent event;
         event.type = RETRESH_EVENT;
@@ -154,43 +192,43 @@ static void refresh_thread(void* data)
 
 static int init_sdl_player()
 {
-
+    
     video_width = codecCtx->width;
     video_height = codecCtx->height;
-
+    
     screen_width = video_width/2;
     screen_height = video_height/2;
-
+    
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
-
+    
     window = SDL_CreateWindow(fmtCtx->filename, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, screen_width, screen_height, SDL_WINDOW_OPENGL);
-
+    
     if (!window) {
         av_log(NULL, AV_LOG_ERROR, "cant create window %s \n", SDL_GetError());
         return -1;
     }
-
+    
     renderer = SDL_CreateRenderer(window, -1, 0);
-
+    
     if (!renderer) {
         av_log(NULL, AV_LOG_ERROR, "cant create renderer %s \n", SDL_GetError());
         return -1;
     }
-
+    
     videoRect.x = 0;
     videoRect.y = 0;
     videoRect.w = screen_width;
     videoRect.h = screen_height;
-
+    
     texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, screen_width, screen_height);
-
+    
     if (!texture) {
         av_log(NULL, AV_LOG_ERROR, "cant create texture %s \n", SDL_GetError());
         return -1;
     }
-
+    
     thread = SDL_CreateThread(refresh_thread, NULL, NULL);
-
+    
     if (!thread) {
         av_log(NULL, AV_LOG_ERROR, "cant create thread %s \n", SDL_GetError());
         return -1;
@@ -206,7 +244,7 @@ static void freeSDL()
 
 //Show AVFoundation Device
 //打印macos上的音频视频输入设备名及信息
-void show_avfoundation_device()
+static void show_avfoundation_device()
 {
     AVFormatContext* pFormatCtx = avformat_alloc_context();
     AVDictionary* options = NULL;
@@ -220,9 +258,9 @@ void show_avfoundation_device()
     printf("=============================\n");
 }
 
-int main_save_h264(int argc, char** argv)
+int main(int argc, char** argv)
 {
-
+    
     int ret;
     //这句必加 我还以为所有的register_all都被废弃了
     avdevice_register_all();
@@ -232,7 +270,7 @@ int main_save_h264(int argc, char** argv)
     inCtx = av_find_input_format("avfoundation");
     av_dict_set(&options, "framerate", "60", 0);
     av_dict_set(&options, "pixel_format", "uyvy422", 0);
-   
+    
     // Mac上设置无效
     //    av_dict_set(&options, "offset_x", "100", 0);
     //    av_dict_set(&options, "offset_y", "100", 0);
@@ -244,39 +282,39 @@ int main_save_h264(int argc, char** argv)
         av_log(NULL, AV_LOG_ERROR, "av_find_input_format failed \n");
         return -1;
     }
-
-    char* outFile = "/Users/apple/Desktop/xx.h264";
+    
+    char* outFile = "/Users/apple/Desktop/xx.mp4";
     FILE* dstFile;
     uint8_t endcode[] = { 0, 0, 1, 0xb7 };
     // 0=获取摄像头 1=录制屏幕
     ret = avformat_open_input(&fmtCtx, "1", inCtx, &options);
-
+    
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "avformat_open_input failed %s\n", av_err2str(ret));
         return ret;
     }
-
+    
     ret = avformat_find_stream_info(fmtCtx, NULL);
-
+    
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "");
         return ret;
     }
     av_dump_format(fmtCtx, 0, NULL, 0);
-
+    
     ret = av_find_best_stream(fmtCtx, AVMEDIA_TYPE_VIDEO, -1, 0, NULL, 0);
-
+    
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "av_find_best_stream failed %s\n", av_err2str(ret));
         return ret;
     }
-
+    
     stream_index = ret;
-
+    
     codecCtx = avcodec_alloc_context3(NULL);
-
+    
     ret = avcodec_parameters_to_context(codecCtx, fmtCtx->streams[stream_index]->codecpar);
-
+    
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "avcodec_parameters_to_context failed %s \n", av_err2str(ret));
         return ret;
@@ -284,14 +322,13 @@ int main_save_h264(int argc, char** argv)
     //设置帧率
     codecCtx->framerate=(AVRational){30,1};
     codecCtx->time_base=(AVRational){1,30};
-
     codec = avcodec_find_decoder(codecCtx->codec_id);
-
+    
     if (!codec) {
         av_log(NULL, AV_LOG_ERROR, "avcodec_find_decoder failed %d", codecCtx->codec_id);
         return -1;
     }
-
+    
     ret = avcodec_open2(codecCtx, codec, &options);
     
     if (ret < 0) {
@@ -300,40 +337,45 @@ int main_save_h264(int argc, char** argv)
     }
     
     delayTime=1000/(codecCtx->framerate.num);
-
+    
     ret = init_sdl_player();
-
+    
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "init_sdl_player failed \n");
         return -1;
     }
-
+    
 #if SAVE_FILE
-    dstFile = fopen(outFile, "wb+");
-
-    init_encoder(outFile);
+//    dstFile = fopen(outFile, "wb+");
+    
+    ret=init_encoder(outFile);
+    if (ret<0) {
+        return -1;
+    }
 #endif
-
+    
     AVFrame *frame, *pFrameYuv;
-
+   
     frame = av_frame_alloc();
-
+    
     pFrameYuv = av_frame_alloc();
-
+    
     int numBytes = avpicture_get_size(AV_PIX_FMT_YUV420P, screen_width, screen_width);
     uint8_t* buffer = (uint8_t*)av_malloc(sizeof(uint8_t) * numBytes);
-
+    
     avpicture_fill(pFrameYuv->data, buffer, AV_PIX_FMT_YUV420P, screen_width, screen_height);
-
+    
+//    AV_PIX_FMT_YUVJ420P
+    
     AVPacket pkt;
-
+    
     struct SwsContext* imageSwsContext;
-
+    
     av_init_packet(&pkt);
-
+    
     av_log(NULL, AV_LOG_ERROR, "%d\t%d\t%d\t%d\n", video_width, video_height, screen_width, screen_height);
     int framecount = 0;
-
+    
     SDL_Event event;
     while (!thread_exit){
         SDL_WaitEvent(&event);
@@ -365,6 +407,7 @@ int main_save_h264(int argc, char** argv)
                 
                 encodeFrame(dstFile, pFrameYuv);
                 
+                
 #endif
                 
                 SDL_UpdateYUVTexture(texture, &videoRect, pFrameYuv->data[0], pFrameYuv->linesize[0], pFrameYuv->data[1], pFrameYuv->linesize[1], pFrameYuv->data[2], pFrameYuv->linesize[2]);
@@ -382,15 +425,16 @@ int main_save_h264(int argc, char** argv)
     }
     
 #if SAVE_FILE
-    fwrite(endcode, 1, sizeof(endcode), dstFile);
-    fclose(dstFile);
+    av_write_trailer(ofmt);
+//    fwrite(endcode, 1, sizeof(endcode), dstFile);
+//    fclose(dstFile);
 #endif
     
     freeSDL();
     
     avformat_close_input(&fmtCtx);
     
-
+    
     
     return 0;
 }
