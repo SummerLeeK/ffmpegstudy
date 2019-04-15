@@ -31,13 +31,15 @@ SDL_Renderer* renderer;
 SDL_Texture* texture;
 SDL_Rect videoRect;
 SDL_Thread* thread;
+static int delayTime=40;
 static int thread_exit = 0;
-
+static int bit_rate=0;
 static AVCodecContext* encodeCodecCtx;
 static AVOutputFormat* outputfmt;
 //static AVFormatContext* outfmt;
 static AVFrame* outFrame;
 static AVPacket outPkt;
+
 static int init_encoder(char* outfilename)
 {
     int ret;
@@ -52,14 +54,15 @@ static int init_encoder(char* outfilename)
 
     encodeCodecCtx = avcodec_alloc_context3(codec);
 
-    encodeCodecCtx->bit_rate = fmtCtx->bit_rate;
+    encodeCodecCtx->bit_rate = bit_rate;
     encodeCodecCtx->width = screen_width;
     encodeCodecCtx->height = screen_height;
     encodeCodecCtx->time_base.num = 1;
-    encodeCodecCtx->time_base.den = 25;
-    encodeCodecCtx->framerate = (AVRational){ 25, 1 };
+    encodeCodecCtx->time_base.den = 30;
+    encodeCodecCtx->framerate = (AVRational){ 30, 1 };
     encodeCodecCtx->gop_size = 12;
     encodeCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+    
 
     encodeCodecCtx->max_b_frames = 1;
 
@@ -97,7 +100,14 @@ static int pts = 0;
 static void encodeFrame(FILE* dstFile, AVFrame* frame)
 {
     int ret;
-
+    //设置一些属性 这些属性不设置会在控制台中打印出来
+    frame->format=AV_PIX_FMT_YUV420P;
+    frame->width=screen_width;
+    frame->height=screen_height;
+    
+    int64_t mypts=av_rescale_q(frame->pts, codecCtx->time_base, encodeCodecCtx->time_base);
+    //向encodeCodecCtx发送一帧数据
+    frame->pts=mypts;
     ret = avcodec_send_frame(encodeCodecCtx, frame);
 
     if (ret < 0) {
@@ -107,15 +117,16 @@ static void encodeFrame(FILE* dstFile, AVFrame* frame)
     }
 
     while (ret >= 0) {
+        //接受数据。一个packet中可能包含多个frame
         ret = avcodec_receive_packet(encodeCodecCtx, &outPkt);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_packet EAGAIN  AVERROR_EOF  %s\n", av_err2str(ret));
+            //走到这忽略即可 packet可能还没填满
+//            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_packet EAGAIN  AVERROR_EOF  %s\n", av_err2str(ret));
             return;
         } else if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "avcodec_receive_packet failed %s\n", av_err2str(ret));
             return;
         }
-        av_log(NULL, AV_LOG_ERROR, "avcodec_write_packet\n");
         fwrite(outPkt.data, 1, outPkt.size, dstFile);
 
         av_packet_unref(&outPkt);
@@ -127,15 +138,11 @@ static void refresh_thread(void* data)
 {
 
     while(!thread_exit) {
-        SDL_Event event;
+        SDL_UserEvent event;
         event.type = RETRESH_EVENT;
         SDL_PushEvent(&event);
-        SDL_Delay(40);
+        SDL_Delay(delayTime);
     }
-
-    SDL_Event event;
-    event.type = BREAK_EVENT;
-    SDL_PushEvent(&event);
 }
 
 static int init_sdl_player()
@@ -144,8 +151,8 @@ static int init_sdl_player()
     video_width = codecCtx->width;
     video_height = codecCtx->height;
 
-    screen_width = video_width/4;
-    screen_height = video_height/4;
+    screen_width = video_width/2;
+    screen_height = video_height/2;
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
 
@@ -216,8 +223,9 @@ int main(int argc, char** argv)
     AVDictionary* options = NULL;
     //  寻找Macos上的摄像头设备
     inCtx = av_find_input_format("avfoundation");
-    av_dict_set(&options, "framerate", "25", 0);
+    av_dict_set(&options, "framerate", "60", 0);
     av_dict_set(&options, "pixel_format", "uyvy422", 0);
+   
     // Mac上设置无效
     //    av_dict_set(&options, "offset_x", "100", 0);
     //    av_dict_set(&options, "offset_y", "100", 0);
@@ -230,7 +238,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    char* outFile = "/Users/apple/Desktop/qqQ.h264";
+    char* outFile = "/Users/apple/Desktop/xx.h264";
     FILE* dstFile;
     uint8_t endcode[] = { 0, 0, 1, 0xb7 };
     // 0=获取摄像头 1=录制屏幕
@@ -266,7 +274,10 @@ int main(int argc, char** argv)
         av_log(NULL, AV_LOG_ERROR, "avcodec_parameters_to_context failed %s \n", av_err2str(ret));
         return ret;
     }
-
+    //设置帧率
+    codecCtx->framerate=(AVRational){30,1};
+    codecCtx->time_base=(AVRational){1,30};
+    codecCtx->bit_rate=bit_rate;
     codec = avcodec_find_decoder(codecCtx->codec_id);
 
     if (!codec) {
@@ -274,12 +285,14 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    ret = avcodec_open2(codecCtx, codec, NULL);
-
+    ret = avcodec_open2(codecCtx, codec, &options);
+    
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "avcodec_open2 failed %s", av_err2str(ret));
         return ret;
     }
+    
+    delayTime=1000/(codecCtx->framerate.num);
 
     ret = init_sdl_player();
 
@@ -315,9 +328,8 @@ int main(int argc, char** argv)
     int framecount = 0;
 
     SDL_Event event;
-    for(;;) {
+    while (!thread_exit){
         SDL_WaitEvent(&event);
-        av_log(NULL, AV_LOG_ERROR, "event \t %d" ,event.type);
         if (event.type == RETRESH_EVENT) {
             while (1) {
                 if (av_read_frame(fmtCtx, &pkt)<0) {
@@ -356,8 +368,6 @@ int main(int argc, char** argv)
                 
             }
             av_packet_unref(&pkt);
-        } else if (event.type == BREAK_EVENT) {
-            break;
         }else if(event.type==SDL_QUIT)
         {
             thread_exit=1;
