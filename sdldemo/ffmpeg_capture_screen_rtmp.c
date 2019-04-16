@@ -3,6 +3,7 @@
 //  demo
 //  获取摄像头并sdl显示
 //  参考 https://blog.csdn.net/leixiaohua1020/article/details/39702113
+//  rtmp推流
 //  Created by Apple on 2019/4/12.
 //  Copyright © 2019年 Apple. All rights reserved.
 //
@@ -46,22 +47,27 @@ static int init_encoder(char* outfilename)
 {
     int ret;
     
-    ret=avformat_alloc_output_context2(&ofmt, NULL, NULL, outfilename);
+    ret=avformat_alloc_output_context2(&ofmt, NULL, "flv", outfilename);
     
     if (ret<0) {
         av_log(NULL, AV_LOG_ERROR, "avformat_alloc_output_context2 failed \n");
         return -1;
     }
-    outputfmt=av_guess_format(NULL, outfilename, NULL);
+    outputfmt=av_guess_format("flv", outfilename, NULL);
     if (!outputfmt) {
         av_log(NULL, AV_LOG_ERROR, "av_guess_format failed \n");
         return -1;
     }
     ofmt->oformat=outputfmt;
-
-  
-   
+    
+    
+    
     AVCodec* codec = avcodec_find_encoder(outputfmt->video_codec);
+    
+    if (!codec) {
+        av_log(NULL, AV_LOG_ERROR, "avcodec_find_encoder failed \n");
+        return -1;
+    }
     
     outStream=avformat_new_stream(ofmt, codec);
     
@@ -76,20 +82,20 @@ static int init_encoder(char* outfilename)
     encodeCodecCtx->bit_rate = bit_rate;
     encodeCodecCtx->width = screen_width;
     encodeCodecCtx->height = screen_height;
-
-    encodeCodecCtx->time_base.den=30;
+    
+    encodeCodecCtx->time_base.den=60;
     encodeCodecCtx->time_base.num=10;
     encodeCodecCtx->framerate.den=1;
-    encodeCodecCtx->framerate.num=30;
-
+    encodeCodecCtx->framerate.num=60;
+    
     encodeCodecCtx->gop_size = 100;
     
     encodeCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
     
-    encodeCodecCtx->max_b_frames = 0;
+    //    encodeCodecCtx->max_b_frames = 3;
     encodeCodecCtx->mb_lmin=1;
     encodeCodecCtx->mb_lmax=50;
-
+    
     //最大和最小量化系数
     encodeCodecCtx->qmin = 10;
     encodeCodecCtx->qmax = 51;
@@ -101,22 +107,19 @@ static int init_encoder(char* outfilename)
         av_opt_set(encodeCodecCtx->priv_data, "preset", "slow", 0);
     }
     
-    if (ofmt->oformat->flags & AVFMT_GLOBALHEADER)
-        encodeCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    
     if (avcodec_open2(encodeCodecCtx, codec, NULL) < 0) {
         av_log(NULL, AV_LOG_ERROR, "avcodec_open2 failed \n");
         return -1;
     }
-  
+    
     ret=avcodec_parameters_from_context(outStream->codecpar, encodeCodecCtx);
-
-
+    
+    
     if (ret<0) {
         av_log(NULL, AV_LOG_ERROR, "avcodec_parameters_from_context failed %s\n",av_err2str(ret));
         return -1;
     }
-//    outStream->x
+    //    outStream->x
     outStream->time_base=encodeCodecCtx->time_base;
     ret=avio_open(&ofmt->pb, outfilename, AVIO_FLAG_READ_WRITE);
     
@@ -149,8 +152,6 @@ static void encodeFrame(FILE* dstFile, AVFrame* frame)
     pts++;
     frame->pts = pts;
     
-    long long start_time = av_gettime();
-    
     ret = avcodec_send_frame(encodeCodecCtx, frame);
     
     if (ret < 0) {
@@ -171,65 +172,19 @@ static void encodeFrame(FILE* dstFile, AVFrame* frame)
             return;
         }
         
-        if (outPkt.pts==AV_NOPTS_VALUE) {
-            av_log(NULL, AV_LOG_ERROR, "AV_NOPTS_VALUE\n");
-        }
-//        if(outPkt.pts==AV_NOPTS_VALUE){
-//            //AVRational time_base：时基。通过该值可以把PTS，DTS转化为真正的时间。
-//            AVRational time_base1 = fmtCtx->streams[stream_index]->time_base;
-//
-//
-//            //计算两帧之间的时间
-//            /*
-//             r_frame_rate 基流帧速率  （不是太懂）
-//             av_q2d 转化为double类型
-//             */
-//            int64_t calc_duration = (double)AV_TIME_BASE / av_q2d(fmtCtx->streams[stream_index]->r_frame_rate);
-//
-//            //配置参数
-//            outPkt.pts = (double)(stream_index*calc_duration) / (double)(av_q2d(time_base1)*AV_TIME_BASE);
-//            outPkt.dts = outPkt.pts;
-//            outPkt.duration = (double)calc_duration / (double)(av_q2d(time_base1)*AV_TIME_BASE);
-//        }
-//        //延时
-//        if (outPkt.stream_index == stream_index) {
-//            AVRational time_base = fmtCtx->streams[stream_index]->time_base;
-//            AVRational time_base_q = { 1,AV_TIME_BASE };
-//            //计算视频播放时间
-//            int64_t pts_time = av_rescale_q(outPkt.dts, time_base, time_base_q);
-//            //计算实际视频的播放时间
-//            int64_t now_time = av_gettime() - start_time;
-//
-//            AVRational avr = fmtCtx->streams[stream_index]->time_base;
-//
-//            if (pts_time > now_time) {
-//                //睡眠一段时间（目的是让当前视频记录的播放时间与实际时间同步）
-//                av_usleep((unsigned int)(pts_time - now_time));
-//            }
-//        }
-//
-//        //计算延时后，重新指定时间戳
-//        outPkt.pts = av_rescale_q_rnd(outPkt.pts, fmtCtx->streams[stream_index]->time_base, outStream->time_base,(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-//        outPkt.dts = av_rescale_q_rnd(outPkt.dts, fmtCtx->streams[stream_index]->time_base, outStream->time_base,(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-//        outPkt.duration = (int)av_rescale_q(outPkt.duration, fmtCtx->streams[stream_index]->time_base, outStream->time_base);
-//        //字节流的位置，-1 表示不知道字节流位置
-//        outPkt.pos = -1;
-
-        
-        
         // 计算packet的pts
-//        av_packet_rescale_ts(&outPkt,
-//                            codecCtx->time_base,
-//                             outStream->time_base);
+        //        av_packet_rescale_ts(&outPkt,
+        //                            codecCtx->time_base,
+        //                             outStream->time_base);
         
         outPkt.pts=av_rescale_q_rnd(outPkt.pts, codecCtx->time_base, outStream->time_base, AV_ROUND_PASS_MINMAX|AV_ROUND_NEAR_INF);
-
+        
         outPkt.dts=outPkt.pts;
-
+        
         outPkt.duration=av_rescale_q(outPkt.duration, codecCtx->time_base, outStream->time_base);
-//
+        
         av_interleaved_write_frame(ofmt, &outPkt);
-//        fwrite(outPkt.data, 1, outPkt.size, dstFile);
+        //        fwrite(outPkt.data, 1, outPkt.size, dstFile);
         
         av_packet_unref(&outPkt);
     }
@@ -243,7 +198,7 @@ static void refresh_thread(void* data)
         SDL_UserEvent event;
         event.type = RETRESH_EVENT;
         SDL_PushEvent(&event);
-//        SDL_Delay(delayTime);
+        SDL_Delay(delayTime);
     }
 }
 
@@ -253,8 +208,8 @@ static int init_sdl_player()
     video_width = codecCtx->width;
     video_height = codecCtx->height;
     
-    screen_width = video_width/4;
-    screen_height = video_height/4;
+    screen_width = video_width;
+    screen_height = video_height;
     
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
     
@@ -315,17 +270,18 @@ static void show_avfoundation_device()
     printf("=============================\n");
 }
 
-int main(int argc, char** argv)
+int main_rtmp(int argc, char** argv)
 {
     
     int ret;
+    avformat_network_init();
     //这句必加 我还以为所有的register_all都被废弃了
     avdevice_register_all();
-    show_avfoundation_device();
+    //    show_avfoundation_device();
     AVDictionary* options = NULL;
     //  寻找Macos上的摄像头设备
     inCtx = av_find_input_format("avfoundation");
-//    av_dict_set(&options, "framerate", "30", 0);
+    av_dict_set(&options, "framerate", "60", 0);
     av_dict_set(&options, "pixel_format", "uyvy422", 0);
     
     // Mac上设置无效
@@ -334,13 +290,13 @@ int main(int argc, char** argv)
     //    av_dict_set(&options, "title", "Xcode", 0);
     //在macOS上 如果是录制屏幕的状态那么video_size设置是无效的
     //最后生成的图像宽高是屏幕的宽高
-//    av_dict_set(&options, "video_size", "1280x720", 0);
+    av_dict_set(&options, "video_size", "2560x1600", 0);
     if (!inCtx) {
         av_log(NULL, AV_LOG_ERROR, "av_find_input_format failed \n");
         return -1;
     }
     
-    char* outFile = "/Users/apple/Desktop/xx.mp4";
+    char* outFile = "rtmp://192.168.13.108:1935/zbcs/test6";
     FILE* dstFile;
     uint8_t endcode[] = { 0, 0, 1, 0xb7 };
     // 0=获取摄像头 1=录制屏幕
@@ -369,7 +325,7 @@ int main(int argc, char** argv)
     
     stream_index = ret;
     
-    codecCtx = fmtCtx->streams[stream_index]->codec;
+    codecCtx = avcodec_alloc_context3(NULL);
     
     ret = avcodec_parameters_to_context(codecCtx, fmtCtx->streams[stream_index]->codecpar);
     
@@ -378,8 +334,8 @@ int main(int argc, char** argv)
         return ret;
     }
     //设置帧率
-    codecCtx->framerate=(AVRational){30,1};
-//    codecCtx->time_base=(AVRational){1,30};
+    codecCtx->framerate=(AVRational){60,1};
+    codecCtx->time_base=(AVRational){1,60};
     codec = avcodec_find_decoder(codecCtx->codec_id);
     
     if (!codec) {
@@ -404,7 +360,7 @@ int main(int argc, char** argv)
     }
     
 #if SAVE_FILE
-//    dstFile = fopen(outFile, "wb+");
+    //    dstFile = fopen(outFile, "wb+");
     
     ret=init_encoder(outFile);
     if (ret<0) {
@@ -413,7 +369,7 @@ int main(int argc, char** argv)
 #endif
     
     AVFrame *frame, *pFrameYuv;
-   
+    
     frame = av_frame_alloc();
     
     pFrameYuv = av_frame_alloc();
@@ -423,7 +379,7 @@ int main(int argc, char** argv)
     
     avpicture_fill(pFrameYuv->data, buffer, AV_PIX_FMT_YUV420P, screen_width, screen_height);
     
-//    AV_PIX_FMT_YUVJ420P
+    //    AV_PIX_FMT_YUVJ420P
     
     AVPacket pkt;
     
@@ -437,10 +393,6 @@ int main(int argc, char** argv)
     SDL_Event event;
     while (!thread_exit){
         SDL_WaitEvent(&event);
-        if (framecount>30*100) {
-            break;
-        }
-        av_log(NULL, AV_LOG_ERROR, "framecount \t %d" ,framecount);
         if (event.type == RETRESH_EVENT) {
             while (1) {
                 if (av_read_frame(fmtCtx, &pkt)<0) {
@@ -479,21 +431,18 @@ int main(int argc, char** argv)
                 SDL_RenderCopy(renderer, texture, NULL, NULL);
                 SDL_RenderPresent(renderer);
                 
-               
             }
             av_packet_unref(&pkt);
         }else if(event.type==SDL_QUIT)
         {
             thread_exit=1;
         }
-         ++framecount;
-            
     }
     
 #if SAVE_FILE
     av_write_trailer(ofmt);
-//    fwrite(endcode, 1, sizeof(endcode), dstFile);
-//    fclose(dstFile);
+    //    fwrite(endcode, 1, sizeof(endcode), dstFile);
+    //    fclose(dstFile);
 #endif
     
     freeSDL();
